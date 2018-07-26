@@ -1,0 +1,136 @@
+
+↑←↓→
+
+1. MMCoreServices层与整个App的流程依赖关系:
+                                App
+                                 |
+                                 ↓
+                            UI Framework  <--------------------------
+                                 |                                  |
+                                 | (1-to-*)                         |
+                                 ↓                                  |
+                         Service Framework                          |
+                                 |                                  |
+                                 | (1-to-1)                         |
+                                 ↓                                  |
+                          MMServiceCenter (Multi-delegated NSProxy) |
+                                 |                                  |
+                                 | (1-to-*)                         |
+                                 ↓                                  |
+                             MMService (Single/Global)              |
+                                 |                               Callback
+          MMSessionConfiguration |                                  |
+                                 ↓                                  |
+                         MMOperationQueue (from MMApplication)      |
+                                 |                                  |
+                                 | (1-to-*)                         |
+                                 ↓                                  |
+                            MMOperation =============================
+                                 |                                  |
+                       MMRequest |                                  |
+          MMSessionConfiguration | (1-to-1)                         |
+             MMRequestCompletion |                                  |
+                                 ↓                                  |
+                          MMSessionManager                          |
+                                 |                                  |
+                       MMRequest |                                  |
+          MMSessionConfiguration | (1-to-*)                MMRequestCompletion
+             MMRequestCompletion |                                  |
+                                 ↓                                  |
+                            MMConnection                            |
+                                 |                                  |
+                       MMRequest |                                  |
+             MMRequestCompletion |                                  |
+                                 ↓                                  |
+                             MMResponse                             |
+                                 |                                  |
+                                 |__________________________________|
+
+2. 作用说明，创建时机：
+2.1. MMServiceCenter
+    2.1.1. 作用说明：
+        a. 它将作为与一个UIFramework形成一对一关系的与后台交互的桥梁，传递管理所有的UI需求
+            并发向后台或服务器，完成任务后回调至UI层刷新给用户；
+        b. 它是一个可选的多委托动态代理，将把任务分配给注册进这个center的实现MMService
+            协议的所有MMService；
+        c. 它管理着一个或多个MMService，可以支持这些子服务的互换或共存。
+
+2.2. MMService作用说明：
+    MMService将用于上层实现协议，实现具体业务任务的创建，分Single和Global两种类型，
+    Single(maybe MM*Service)可关闭进行切换，Global(AnalyticsKit, MMLog)不可停止。
+
+    一般地，普通的业务较单一的App只需要一个MMService即可，甚至连MMServiceCenter都用不上。
+
+2.3. MMSessionConfiguration
+    2.3.1. 作用说明：
+        a. 指定一种业务或一个模块的会话管理器MMSessionManager，用于管理相关的所有
+            MMConnection连接，这些MMConnection必须有相同的基本配置如host:port, token,
+            HTTP headers，但功能会有所不同；
+        b. 指定一种受MMSessionManager管理的与服务器的连接的MMConnection类型，及其它
+            与MMConnection相关的固定配置，如网络请求队列，数据持久队列，并由MMOperation
+            转储于每一条MMRequest中；
+        c. 指定一种请求的唯一标识生成器MMRequestIDGenerator，这将在Socket业务中起重要作用，
+            可以从服务器返回的NSData中根据requestID识别原始的MMRequest；
+    2.3.2. 创建时机，使用方法：
+        在MMOperation-sendRequest之前被创建并存储于MMRequest中。
+
+2.4. MMOperationQueue
+    2.4.1. 作用说明：
+        a. 管理各种同步或异步的任务；
+        b. 将只接收MMOperation，并且只接受-addOperation:添加进入的任务；
+    2.4.2. 创建时机，使用方法：
+        由MMApplication默认创建并不可修改值，只允许配置属性。
+
+2.5. MMOperation
+    2.5.1. 作用说明：
+        a. 管理著用户的一条任务，并可采取异步任务机制；
+        b. 创建网络请求，将请求由MMSessionManager发送出去，并负责将由MMConnection回
+            调回来的MMResponse临时数据持久化；
+        c. 标识用户的一个任务已经完成并回调至MMService再通知UI层呈现结果给用户；
+    2.5.2. 创建时机，使用方法：
+        在MMService里创建并被NSOperationQueue管理。
+
+2.6. MMRequest
+    2.6.1. 作用说明：
+        a. 负责用户请求的信息存储及网络交互数据的生成；
+        b. 存储MMSessionConfiguration以指定MMConnection类型来处理这条用户的请求；
+        c. 每一条MMRequest将持有一个网络交互协议MMConnection的唯一标识connectionID，
+            这样方便于进行链式任务；这个标识将在MMSessionManager里确定具体的交互协议
+            MMConnection，如果有，返回，如果没有，根据
+            MMRequest.configuration.connectionClass生成一个；
+        d. 每个MMSocketRequest将持有一个当前请求的唯一标识，用于取到socket数据后识别
+            出请求。
+    2.6.2. 创建时机，使用方法：
+        在MMOperation-init方法里创建，将贯穿于整个MMOperation生命周期;
+
+2.7. MMSessionManager
+    2.7.1. 作用说明：
+        a. 一个MMSessionManager根据MMSessionConfiguration.connectionClass管理著
+            一种类别（即同一种服务地址或一种业务，一个模块）的MMConnection，负责它们的
+            创建，销毁及任务传递和取消；
+        b. 如是HTTP请求，一般一个MMSessionManager只需要管理一个Connection；
+        c. 如是Socket请求，那麽可能同一地址，将会有几种连接同时存在，比如普通任务的请求保
+            持一个连接，特殊任务（可能因状态值影响普通任务的正常进行）的请求将使用另外一个
+            同地址的连接，也可能存在一些不需要登录状态或其它状态的任务需求，如邮件的IMAP
+            协议；
+    2.7.2. 创建时机，使用方法：
+        创建于MMOperation-sendRequest前;
+
+2.8. MMConnection
+    2.8.1. 作用说明：
+        a. 负责一种与服务器交互协议的处理，发送请求，接收数据；
+        b. 一个MMSessionManager只允许管理一种MMConnection，这些MMConnection必须指
+            向同一个地址，只是功能会有所不同；
+        c. 根据接收数据生成MMResponse并以MMRequestCompletion的方式将数据返回调给
+            MMOperation进行持久化；
+    2.8.2. 创建时机，使用方法：
+        MMSessionManager-startRequest:withCompletion:里根据MMRequest的connectionID
+        和MMRequest.MMSessionConfiguration.connectionClass来选取或创建；
+
+2.9. MMResponse
+    2.9.1. 作用说明：
+        负责转换从服务器传回来的的数据成业务层的临时数据
+    2.9.2. 创建时机，使用方法：
+        由MMRequest.responseClass指定, 在MMConnection从服务器取到数据并识别出
+        MMRequest之后被创建;
+
