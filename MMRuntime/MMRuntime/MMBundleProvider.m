@@ -35,6 +35,7 @@ __singleton__(MMBundleManager)
 
 - (BOOL)installBundleWithIdentifier:(NSString *)identifier frameworkName:(NSString *)frameworkName {
     BOOL successed = NO;
+    NSString *errorMessage = nil;
     if(identifier.length && frameworkName.length) {
         NSString *principalClassString = [NSString stringWithFormat:@"%@BundleDelegate", frameworkName];
         Class clazz = NSClassFromString(principalClassString);
@@ -47,11 +48,17 @@ __singleton__(MMBundleManager)
                 bundle.principalDelegate = bundleDelegate;
                 _bundles[identifier] = bundle;
                 successed = YES;
+            } else {
+                errorMessage = @"Bundle delegate init failed.";
             }
+        } else {
+            errorMessage = @"Bundle delegate class not founded.";
         }
+    } else {
+        errorMessage = @"Missing configuration";
     }
     if(!successed) {
-        NSLog(@"Framework %@ with identifier %@ install failed.", frameworkName, identifier);
+        NSLog(@"Framework %@ with identifier %@ install failed with error: %@", frameworkName, identifier, errorMessage);
     }
     return successed;
 }
